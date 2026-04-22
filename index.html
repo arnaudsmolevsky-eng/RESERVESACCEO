@@ -32,7 +32,8 @@
 
     // --- IMPORT FIREBASE ---
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.5.0/firebase-app.js";
-    import { getAuth, GoogleAuthProvider, signInWithRedirect, getRedirectResult, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.5.0/firebase-auth.js";
+    // Retour à signInWithPopup, plus fiable sur les domaines tiers
+    import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.5.0/firebase-auth.js";
     import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.5.0/firebase-firestore.js";
     
     // --- IMPORT ICÔNES ---
@@ -77,7 +78,6 @@
 
     // ==========================================
     // UTILS : COMPRESSION D'IMAGE
-    // (Pour ne pas saturer la base de données Firestore)
     // ==========================================
     const compressImageFile = (file, maxDim = 2000, quality = 0.6) => {
       return new Promise((resolve) => {
@@ -240,12 +240,6 @@
 
       // --- CONNEXION & SYNCHRONISATION FIREBASE ---
       useEffect(() => {
-        getRedirectResult(auth).catch((error) => {
-          if (error.code === 'auth/unauthorized-domain') {
-            setUser({ uid: 'mock-user-test', displayName: 'Mode Test', email: 'test@acceo.fr', photoURL: null });
-          }
-        });
-
         const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
           if (!user || user.uid !== 'mock-user-test') setUser(currentUser);
           setIsAuthLoading(false);
@@ -261,21 +255,36 @@
           return;
         }
 
-        // Écoute de la base de données en temps réel
+        // Écoute de la base de données en temps réel (avec gestion d'erreur sécurisée)
+        const handleError = (error) => console.warn("Attente de configuration Firestore :", error.message);
+
         const unsubP = onSnapshot(collection(db, 'artifacts', APP_ID, 'users', user.uid, 'projects'), snap => {
           const proj = snap.docs.map(d => d.data());
           setProjects(proj);
           if (proj.length > 0 && !currentProjectId) setCurrentProjectId(proj[0].id);
-        });
-        const unsubPl = onSnapshot(collection(db, 'artifacts', APP_ID, 'users', user.uid, 'plans'), snap => setPlans(snap.docs.map(d => d.data())));
-        const unsubR = onSnapshot(collection(db, 'artifacts', APP_ID, 'users', user.uid, 'reserves'), snap => setReserves(snap.docs.map(d => d.data())));
+        }, handleError);
+        const unsubPl = onSnapshot(collection(db, 'artifacts', APP_ID, 'users', user.uid, 'plans'), snap => setPlans(snap.docs.map(d => d.data())), handleError);
+        const unsubR = onSnapshot(collection(db, 'artifacts', APP_ID, 'users', user.uid, 'reserves'), snap => setReserves(snap.docs.map(d => d.data())), handleError);
 
         return () => { unsubP(); unsubPl(); unsubR(); };
       }, [user]);
 
       const handleGoogleLogin = async () => {
-        try { await signInWithRedirect(auth, provider); } 
-        catch (error) { alert("Impossible d'initialiser la connexion avec Google."); }
+        try { 
+          // Utilisation d'un Popup (fenêtre) classique pour la connexion, plus compatible.
+          await signInWithPopup(auth, provider); 
+        } 
+        catch (error) { 
+          console.error("Erreur de connexion :", error);
+          if (error.code === 'auth/unauthorized-domain') {
+             alert(`⚠️ Domaine non autorisé par Firebase.\n\nVous devez ajouter ${window.location.hostname} dans les "Domaines autorisés" des paramètres d'authentification Firebase.\n\nPassage en MODE TEST.`);
+             setUser({ uid: 'mock-user-test', displayName: 'Mode Test', email: 'test@acceo.fr', photoURL: null });
+          } else if (error.code === 'auth/popup-blocked') {
+             alert("⚠️ Votre navigateur a bloqué la fenêtre de connexion Google. Veuillez autoriser les pop-ups pour ce site.");
+          } else {
+             alert("Erreur lors de la connexion Google: " + error.message);
+          }
+        }
       };
 
       const handleLogout = () => {
@@ -313,8 +322,8 @@
 
         const handleWheel = (e) => {
           e.preventDefault();
-          const factor = e.deltaY < 0 ? 1.15 : 0.85; // Zoom plus rapide
-          setZoomLevel(z => Math.min(Math.max(0.5, z * factor), 20)); // Limite repoussée à 20x
+          const factor = e.deltaY < 0 ? 1.15 : 0.85; 
+          setZoomLevel(z => Math.min(Math.max(0.5, z * factor), 20)); 
         };
 
         let initialPinchDist = null;
@@ -358,7 +367,6 @@
         isDraggingRef.current = false;
         dragStartPosRef.current = { x: e.clientX, y: e.clientY };
         if (scrollContainerRef.current) dragStartScrollRef.current = { x: scrollContainerRef.current.scrollLeft, y: scrollContainerRef.current.scrollTop };
-        if (e.pointerType === 'mouse') { try { e.currentTarget.setPointerCapture(e.pointerId); } catch(err) {} }
       };
 
       const handlePointerMove = (e) => {
@@ -366,7 +374,11 @@
         if (e.pointerType === 'touch' && !e.isPrimary) return;
         const dx = e.clientX - dragStartPosRef.current.x;
         const dy = e.clientY - dragStartPosRef.current.y;
-        if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
+        
+        // Tolérance de mouvement plus élevée sur écran tactile pour ne pas bloquer les clics (tapotements) par erreur
+        const threshold = e.pointerType === 'touch' ? 15 : 5;
+        
+        if (Math.abs(dx) > threshold || Math.abs(dy) > threshold) {
           isDraggingRef.current = true;
           if (scrollContainerRef.current) {
             scrollContainerRef.current.scrollLeft = dragStartScrollRef.current.x - dx;
@@ -377,7 +389,10 @@
 
       const handlePointerUp = (e) => {
         isPointerDownRef.current = false;
-        if (e.pointerType === 'mouse') { try { e.currentTarget.releasePointerCapture(e.pointerId); } catch(err) {} }
+        // On garde l'état de glissement actif quelques millisecondes pour bien bloquer le 'onClick' qui suit immédiatement le relâchement
+        setTimeout(() => {
+          isDraggingRef.current = false;
+        }, 50);
       };
 
       // --- ACTIONS MÉTIER ---
@@ -385,7 +400,8 @@
         const projectName = window.prompt("Nom du nouveau projet :");
         if (projectName && projectName.trim() !== '') {
           const newProject = { id: `p_${Date.now()}`, name: projectName.trim(), lots: [] };
-          if (!user || user.uid === 'mock-user-test') setProjects(p => [...p, newProject]);
+          // Mise à jour immédiate (optimiste)
+          setProjects(p => [...p, newProject]);
           saveToDB('projects', newProject.id, newProject);
           setCurrentProjectId(newProject.id);
           setCurrentPlanId(null);
@@ -396,14 +412,15 @@
         if (!newLotName || !currentProject) return;
         const newLot = { id: `lot_${Date.now()}`, name: newLotName, entreprise: newLotEntreprise };
         const updatedProject = { ...currentProject, lots: [...(currentProject.lots || []), newLot] };
-        if (!user || user.uid === 'mock-user-test') setProjects(projects.map(p => p.id === updatedProject.id ? updatedProject : p));
+        
+        setProjects(projects.map(p => p.id === updatedProject.id ? updatedProject : p));
         saveToDB('projects', updatedProject.id, updatedProject);
         setNewLotName(''); setNewLotEntreprise('');
       };
 
       const handleDeleteLot = (lotId) => {
         const updatedProject = { ...currentProject, lots: currentProject.lots.filter(l => l.id !== lotId) };
-        if (!user || user.uid === 'mock-user-test') setProjects(projects.map(p => p.id === updatedProject.id ? updatedProject : p));
+        setProjects(projects.map(p => p.id === updatedProject.id ? updatedProject : p));
         saveToDB('projects', updatedProject.id, updatedProject);
       };
 
@@ -442,13 +459,14 @@
             canvas.width = viewport.width;
             await page.render({ canvasContext: canvas.getContext('2d'), viewport: viewport }).promise;
             
-            imageUrl = canvas.toDataURL('image/jpeg', 0.6); // Compression forte pour Firestore
+            imageUrl = canvas.toDataURL('image/jpeg', 0.6); 
           } else {
             imageUrl = await compressImageFile(file, 2000, 0.6);
           }
           
           const newPlan = { id: newPlanId, projectId: currentProjectId, name: planName, imageUrl };
-          if (!user || user.uid === 'mock-user-test') setPlans(p => [...p, newPlan]);
+          
+          setPlans(p => [...p, newPlan]);
           saveToDB('plans', newPlan.id, newPlan);
           setCurrentPlanId(newPlanId);
           
@@ -458,6 +476,10 @@
 
       const handleAddPin = (e) => {
         if (isDraggingRef.current || viewMode !== 'plan' || !currentPlan) return;
+        
+        // Sécurité supplémentaire : s'assurer qu'on ne clique pas sur une interface existante
+        if (e.target.closest('.reserve-pin') || e.target.closest('button')) return;
+
         const rect = e.currentTarget.getBoundingClientRect();
         const newReserve = {
           id: `r_${Date.now()}`, planId: currentPlanId, 
@@ -467,7 +489,8 @@
           date: new Date().toISOString().split('T')[0]
         };
 
-        if (!user || user.uid === 'mock-user-test') setReserves(r => [...r, newReserve]);
+        // Affichage immédiat de la pastille
+        setReserves(r => [...r, newReserve]);
         saveToDB('reserves', newReserve.id, newReserve);
         setSelectedReserveId(newReserve.id);
       };
@@ -476,13 +499,14 @@
         const reserve = reserves.find(r => r.id === id);
         if (!reserve) return;
         const updated = { ...reserve, ...updates };
-        if (!user || user.uid === 'mock-user-test') setReserves(reserves.map(r => r.id === id ? updated : r));
+        
+        setReserves(reserves.map(r => r.id === id ? updated : r));
         saveToDB('reserves', id, updated);
       };
       
       const handleDeleteReserve = (id) => {
         if(window.confirm('Supprimer cette réserve ?')) {
-          if (!user || user.uid === 'mock-user-test') setReserves(reserves.filter(r => r.id !== id));
+          setReserves(reserves.filter(r => r.id !== id));
           deleteFromDB('reserves', id);
           setSelectedReserveId(null);
         }
@@ -519,7 +543,7 @@
               <img src={LOGO_ACCEO} alt="ACCEO Environnement" className="h-20 mx-auto mb-6 object-contain" />
               <h1 className="text-2xl font-bold text-[#003B5C] mb-2">Gestion des Réserves</h1>
               <p className="text-slate-500 mb-8">Suivi de réserves et annotations</p>
-              <button onClick={handleGoogleLogin} className="w-full flex items-center justify-center gap-3 bg-white border border-slate-300 text-[#003B5C] py-3 px-4 rounded-xl hover:bg-slate-50 font-medium">
+              <button onClick={handleGoogleLogin} className="w-full flex items-center justify-center gap-3 bg-white border border-slate-300 text-[#003B5C] py-3 px-4 rounded-xl hover:bg-slate-50 font-medium cursor-pointer z-10 relative">
                 <LogIn size={20}/> Continuer avec Google
               </button>
             </div>
