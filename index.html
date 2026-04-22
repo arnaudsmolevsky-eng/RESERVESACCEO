@@ -8,7 +8,7 @@
   <!-- CSS Tailwind (CDN) -->
   <script src="https://cdn.tailwindcss.com"></script>
   
-  <!-- Import Map pour ESM (Remplace les scripts UMD React) -->
+  <!-- Import Map pour ESM -->
   <script type="importmap">
     {
       "imports": {
@@ -20,28 +20,27 @@
     }
   </script>
   
-  <!-- Babel pour lire le JSX directement dans le navigateur (CDN) -->
+  <!-- Babel pour lire le JSX -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 </head>
 <body>
-  <!-- Conteneur principal de l'application -->
   <div id="root"></div>
 
-  <!-- Script principal de l'application -->
   <script type="text/babel" data-type="module">
     import React, { useState, useRef, useEffect } from "react";
     import { createRoot } from "react-dom/client";
 
-    // --- IMPORT FIREBASE (via CDN Modules) ---
+    // --- IMPORT FIREBASE ---
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.5.0/firebase-app.js";
-    import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.5.0/firebase-auth.js";
+    import { getAuth, GoogleAuthProvider, signInWithRedirect, getRedirectResult, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.5.0/firebase-auth.js";
+    import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.5.0/firebase-firestore.js";
     
-    // --- IMPORT ICÔNES (via ESM CDN) ---
+    // --- IMPORT ICÔNES ---
     import * as Lucide from "lucide-react";
     const { 
       Map, List, FileText, Plus, X, Upload, Camera, 
       CheckCircle, AlertCircle, Clock, MapPin, 
-      Filter, Trash2, Menu, User, PenTool, Save, RotateCcw, Loader2, LogIn, ZoomIn, ZoomOut
+      Filter, Trash2, Menu, User, PenTool, Save, RotateCcw, Loader2, LogIn, ZoomIn, ZoomOut, Settings
     } = Lucide;
 
     // --- CONFIGURATION FIREBASE ---
@@ -55,39 +54,53 @@
       measurementId: "G-ND9X87M1B5"
     };
 
-    // Initialisation de l'application Firebase et de l'Authentification
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
     const provider = new GoogleAuthProvider();
+    const db = getFirestore(app);
+    const APP_ID = "zero-reserve-acceo"; 
 
-    // --- CONFIGURATION ET DONNÉES ---
+    // --- CONSTANTES ---
     const LOGO_ACCEO = "acceo_environnement-color.png";
-
-    const LOTS = [
-      "Gros œuvre", "Maçonnerie", "Charpente", "Couverture", 
-      "Menuiserie extérieure", "Plomberie", "Électricité", 
-      "CVC", "Menuiserie intérieure", "Peinture", "Revêtement de sol"
-    ];
-
     const STATUS = {
       OPEN: { id: 'OPEN', label: 'Ouvert', color: 'bg-red-500', icon: AlertCircle },
       IN_PROGRESS: { id: 'IN_PROGRESS', label: 'En cours', color: 'bg-orange-500', icon: Clock },
       RESOLVED: { id: 'RESOLVED', label: 'Levé', color: 'bg-green-500', icon: CheckCircle }
     };
 
-    const DEFAULT_PLAN_IMG = "https://images.unsplash.com/photo-1503387762-592deb58ef4e?q=80&w=2000&auto=format&fit=crop";
-
+    // Données de test si hors-ligne ou non connecté
     const MOCK_DATA = {
-      projects: [
-        { id: 'p1', name: 'Résidence Les Lilas - Lyon' }
-      ],
-      plans: [
-        { id: 'pl1', projectId: 'p1', name: 'RDC - Bâtiment A', imageUrl: DEFAULT_PLAN_IMG }
-      ],
-      reserves: [
-        { id: 'r1', planId: 'pl1', x: 25.5, y: 30.2, status: 'OPEN', lot: 'Plomberie', entreprise: 'Plombier Pro', description: 'Fuite sous le lavabo', photoUrl: null, date: '2026-04-22' },
-        { id: 'r2', planId: 'pl1', x: 60.1, y: 45.8, status: 'IN_PROGRESS', lot: 'Électricité', entreprise: 'Elec Éclair', description: 'Prise non alimentée', photoUrl: null, date: '2026-04-20' }
-      ]
+      projects: [{ id: 'p1', name: 'Projet Démo', lots: [{id: 'l1', name: 'Plomberie', entreprise: 'Plombier Pro'}] }],
+      plans: [],
+      reserves: []
+    };
+
+    // ==========================================
+    // UTILS : COMPRESSION D'IMAGE
+    // (Pour ne pas saturer la base de données Firestore)
+    // ==========================================
+    const compressImageFile = (file, maxDim = 2000, quality = 0.6) => {
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const img = new Image();
+          img.onload = () => {
+            let { width, height } = img;
+            if (width > maxDim || height > maxDim) {
+              const ratio = Math.min(maxDim / width, maxDim / height);
+              width *= ratio;
+              height *= ratio;
+            }
+            const cvs = document.createElement('canvas');
+            cvs.width = width;
+            cvs.height = height;
+            cvs.getContext('2d').drawImage(img, 0, 0, width, height);
+            resolve(cvs.toDataURL('image/jpeg', quality));
+          };
+          img.src = e.target.result;
+        };
+        reader.readAsDataURL(file);
+      });
     };
 
     // ==========================================
@@ -97,9 +110,8 @@
       const canvasRef = useRef(null);
       const ctxRef = useRef(null);
       const originalImageRef = useRef(new Image());
-      
       const [isDrawing, setIsDrawing] = useState(false);
-      const [color, setColor] = useState('#ef4444'); // Rouge par défaut
+      const [color, setColor] = useState('#ef4444');
       const [lineWidth, setLineWidth] = useState(4);
 
       useEffect(() => {
@@ -121,7 +133,6 @@
           canvas.width = width;
           canvas.height = height;
           ctx.drawImage(img, 0, 0, width, height);
-          
           ctx.lineCap = 'round';
           ctx.lineJoin = 'round';
         };
@@ -134,15 +145,11 @@
         const rect = canvas.getBoundingClientRect();
         let clientX = e.clientX;
         let clientY = e.clientY;
-        
         if (e.touches && e.touches.length > 0) {
           clientX = e.touches[0].clientX;
           clientY = e.touches[0].clientY;
         }
-        
-        const scaleX = canvas.width / rect.width;
-        const scaleY = canvas.height / rect.height;
-        return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
+        return { x: (clientX - rect.left) * (canvas.width / rect.width), y: (clientY - rect.top) * (canvas.height / rect.height) };
       };
 
       const startDrawing = (e) => {
@@ -179,37 +186,17 @@
           <div className="flex flex-wrap items-center gap-3 mb-4 bg-white p-3 rounded-2xl shadow-2xl">
             <div className="flex gap-2 pr-3 border-r border-slate-200">
               {['#ef4444', '#3b82f6', '#22c55e', '#eab308', '#000000', '#ffffff'].map(c => (
-                <button 
-                  key={c} 
-                  onClick={() => setColor(c)} 
-                  className={`w-8 h-8 rounded-full border-2 transition-transform ${color === c ? 'border-slate-800 scale-125' : 'border-slate-200 hover:scale-110'}`} 
-                  style={{backgroundColor: c}} 
-                />
+                <button key={c} onClick={() => setColor(c)} className={`w-8 h-8 rounded-full border-2 transition-transform ${color === c ? 'border-slate-800 scale-125' : 'border-slate-200 hover:scale-110'}`} style={{backgroundColor: c}} />
               ))}
             </div>
-            <button onClick={resetCanvas} className="p-2 text-slate-500 hover:text-red-500 flex items-center gap-2" title="Effacer tout">
-              <RotateCcw size={18} />
-            </button>
-            <button onClick={onClose} className="p-2 text-slate-500 hover:text-slate-800" title="Annuler">
-              <X size={20} />
-            </button>
-            <button onClick={() => onSave(canvasRef.current.toDataURL('image/jpeg'))} className="ml-2 px-4 py-2 bg-[#003B5C] text-white rounded-xl font-medium hover:bg-[#002a42] flex items-center gap-2">
+            <button onClick={resetCanvas} className="p-2 text-slate-500 hover:text-red-500 flex items-center gap-2"><RotateCcw size={18} /></button>
+            <button onClick={onClose} className="p-2 text-slate-500 hover:text-slate-800"><X size={20} /></button>
+            <button onClick={() => onSave(canvasRef.current.toDataURL('image/jpeg', 0.8))} className="ml-2 px-4 py-2 bg-[#003B5C] text-white rounded-xl font-medium hover:bg-[#002a42] flex items-center gap-2">
               <Save size={18}/> Valider
             </button>
           </div>
-          
           <div className="relative border-4 border-slate-700 rounded-xl overflow-hidden bg-slate-800 touch-none">
-            <canvas
-              ref={canvasRef}
-              onMouseDown={startDrawing}
-              onMouseMove={draw}
-              onMouseUp={stopDrawing}
-              onMouseOut={stopDrawing}
-              onTouchStart={startDrawing}
-              onTouchMove={draw}
-              onTouchEnd={stopDrawing}
-              className="cursor-crosshair block"
-            />
+            <canvas ref={canvasRef} onMouseDown={startDrawing} onMouseMove={draw} onMouseUp={stopDrawing} onMouseOut={stopDrawing} onTouchStart={startDrawing} onTouchMove={draw} onTouchEnd={stopDrawing} className="cursor-crosshair block" />
           </div>
           <p className="text-white/50 text-sm mt-4">Dessinez sur l'image pour entourer ou pointer le défaut.</p>
         </div>
@@ -220,56 +207,15 @@
     // COMPOSANT PRINCIPAL
     // ==========================================
     function App() {
-      // --- AUTHENTIFICATION FIREBASE ---
       const [user, setUser] = useState(null);
       const [isAuthLoading, setIsAuthLoading] = useState(true);
 
-      useEffect(() => {
-        const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-          // Ne pas écraser l'utilisateur local si on est en mode "Test"
-          if (!user || user.uid !== 'mock-user-test') {
-            setUser(currentUser);
-          }
-          setIsAuthLoading(false);
-        });
-        return () => unsubscribe();
-      }, [user]);
+      const [projects, setProjects] = useState([]);
+      const [plans, setPlans] = useState([]);
+      const [reserves, setReserves] = useState([]);
 
-      const handleGoogleLogin = async () => {
-        try {
-          await signInWithPopup(auth, provider);
-        } catch (error) {
-          console.error("Erreur de connexion :", error);
-          if (error.code === 'auth/unauthorized-domain') {
-            alert(`⚠️ Domaine non autorisé par Firebase.\n\nPour que la connexion Google fonctionne sur ce site, vous devez l'autoriser dans Firebase :\n\n1. Allez sur Firebase > Authentication > Paramètres (Settings) > Domaines autorisés.\n2. Ajoutez le domaine exact suivant : \n${window.location.hostname}\n\nEn attendant, passage en MODE TEST pour vous permettre de voir l'application.`);
-            // Mode fallback pour permettre d'utiliser l'application malgré l'erreur de domaine
-            setUser({
-              uid: 'mock-user-test',
-              displayName: 'Utilisateur Test',
-              email: 'test@acceo.fr',
-              photoURL: null
-            });
-          } else {
-            alert("Erreur lors de la connexion Google.");
-          }
-        }
-      };
-
-      const handleLogout = () => {
-        if (user && user.uid === 'mock-user-test') {
-          setUser(null); // Déconnexion du mode test
-        } else {
-          signOut(auth); // Déconnexion Firebase normale
-        }
-      };
-
-      // --- ÉTATS DE L'APPLICATION ---
-      const [projects, setProjects] = useState(MOCK_DATA.projects);
-      const [plans, setPlans] = useState(MOCK_DATA.plans);
-      const [reserves, setReserves] = useState(MOCK_DATA.reserves);
-
-      const [currentProjectId, setCurrentProjectId] = useState(MOCK_DATA.projects[0].id);
-      const [currentPlanId, setCurrentPlanId] = useState(MOCK_DATA.plans[0].id);
+      const [currentProjectId, setCurrentProjectId] = useState(null);
+      const [currentPlanId, setCurrentPlanId] = useState(null);
       const [viewMode, setViewMode] = useState('plan');
       const [selectedReserveId, setSelectedReserveId] = useState(null);
       const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -282,71 +228,116 @@
       const [filterStatus, setFilterStatus] = useState('');
       const [filterLot, setFilterLot] = useState('');
 
+      const [isLotModalOpen, setIsLotModalOpen] = useState(false);
+      const [newLotName, setNewLotName] = useState('');
+      const [newLotEntreprise, setNewLotEntreprise] = useState('');
+
       const currentProject = projects.find(p => p.id === currentProjectId);
       const projectPlans = plans.filter(p => p.projectId === currentProjectId);
       const currentPlan = plans.find(p => p.id === currentPlanId);
       const currentPlanReserves = currentPlanId ? reserves.filter(r => r.planId === currentPlanId) : [];
       const selectedReserve = reserves.find(r => r.id === selectedReserveId);
 
-      // --- LOGIQUE DE ZOOM ET PANNING (Molette & Tactile) ---
-      const zoomLevelRef = useRef(zoomLevel);
-      useEffect(() => { zoomLevelRef.current = zoomLevel; }, [zoomLevel]);
+      // --- CONNEXION & SYNCHRONISATION FIREBASE ---
+      useEffect(() => {
+        getRedirectResult(auth).catch((error) => {
+          if (error.code === 'auth/unauthorized-domain') {
+            setUser({ uid: 'mock-user-test', displayName: 'Mode Test', email: 'test@acceo.fr', photoURL: null });
+          }
+        });
 
+        const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+          if (!user || user.uid !== 'mock-user-test') setUser(currentUser);
+          setIsAuthLoading(false);
+        });
+        return () => unsubscribe();
+      }, [user]);
+
+      useEffect(() => {
+        if (!user) return;
+        if (user.uid === 'mock-user-test') {
+          setProjects(MOCK_DATA.projects); setPlans(MOCK_DATA.plans); setReserves(MOCK_DATA.reserves);
+          if (MOCK_DATA.projects.length > 0) setCurrentProjectId(MOCK_DATA.projects[0].id);
+          return;
+        }
+
+        // Écoute de la base de données en temps réel
+        const unsubP = onSnapshot(collection(db, 'artifacts', APP_ID, 'users', user.uid, 'projects'), snap => {
+          const proj = snap.docs.map(d => d.data());
+          setProjects(proj);
+          if (proj.length > 0 && !currentProjectId) setCurrentProjectId(proj[0].id);
+        });
+        const unsubPl = onSnapshot(collection(db, 'artifacts', APP_ID, 'users', user.uid, 'plans'), snap => setPlans(snap.docs.map(d => d.data())));
+        const unsubR = onSnapshot(collection(db, 'artifacts', APP_ID, 'users', user.uid, 'reserves'), snap => setReserves(snap.docs.map(d => d.data())));
+
+        return () => { unsubP(); unsubPl(); unsubR(); };
+      }, [user]);
+
+      const handleGoogleLogin = async () => {
+        try { await signInWithRedirect(auth, provider); } 
+        catch (error) { alert("Impossible d'initialiser la connexion avec Google."); }
+      };
+
+      const handleLogout = () => {
+        if (user && user.uid === 'mock-user-test') setUser(null);
+        else signOut(auth);
+      };
+
+      // --- HELPERS BASE DE DONNÉES ---
+      const saveToDB = async (col, id, data) => {
+        if (user && user.uid !== 'mock-user-test') {
+          try { await setDoc(doc(db, 'artifacts', APP_ID, 'users', user.uid, col, id), data); } 
+          catch(e) { console.error(e); alert("Erreur de sauvegarde: Firestore n'est peut-être pas activé ou fichier trop lourd."); }
+        }
+      };
+
+      const deleteFromDB = async (col, id) => {
+        if (user && user.uid !== 'mock-user-test') {
+          try { await deleteDoc(doc(db, 'artifacts', APP_ID, 'users', user.uid, col, id)); } 
+          catch(e) {}
+        }
+      };
+
+      // --- LOGIQUE DE ZOOM TACTILE/MOLETTE ---
       const scrollContainerRef = useRef(null);
       const isPointerDownRef = useRef(false);
       const isDraggingRef = useRef(false);
       const dragStartPosRef = useRef({ x: 0, y: 0 });
       const dragStartScrollRef = useRef({ x: 0, y: 0 });
 
-      // Réinitialiser le zoom quand on change de plan
-      useEffect(() => {
-        setZoomLevel(1);
-      }, [currentPlanId]);
+      useEffect(() => { setZoomLevel(1); }, [currentPlanId]);
 
       useEffect(() => {
         const container = scrollContainerRef.current;
         if (!container) return;
 
-        // Gestion de la molette (PC)
         const handleWheel = (e) => {
           e.preventDefault();
-          const zoomDelta = e.deltaY * -0.002;
-          setZoomLevel(z => Math.min(Math.max(0.5, z + zoomDelta), 5));
+          const factor = e.deltaY < 0 ? 1.15 : 0.85; // Zoom plus rapide
+          setZoomLevel(z => Math.min(Math.max(0.5, z * factor), 20)); // Limite repoussée à 20x
         };
 
-        // Gestion du Pinch-to-zoom (Tactile)
         let initialPinchDist = null;
-
         const handleTouchStart = (e) => {
           if (e.touches.length === 2) {
             e.preventDefault();
-            initialPinchDist = Math.hypot(
-              e.touches[0].clientX - e.touches[1].clientX,
-              e.touches[0].clientY - e.touches[1].clientY
-            );
+            initialPinchDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
           }
         };
 
         const handleTouchMove = (e) => {
           if (e.touches.length === 2) {
             e.preventDefault();
-            const currentDist = Math.hypot(
-              e.touches[0].clientX - e.touches[1].clientX,
-              e.touches[0].clientY - e.touches[1].clientY
-            );
+            const currentDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
             if (initialPinchDist) {
-              const delta = (currentDist - initialPinchDist) * 0.01;
-              setZoomLevel(z => Math.min(Math.max(0.5, z + delta), 5));
+              const factor = currentDist / initialPinchDist;
+              setZoomLevel(z => Math.min(Math.max(0.5, z * factor), 20));
             }
             initialPinchDist = currentDist;
           }
         };
 
-        const handleTouchEnd = (e) => {
-          if (e.touches.length < 2) {
-            initialPinchDist = null;
-          }
-        };
+        const handleTouchEnd = (e) => { if (e.touches.length < 2) initialPinchDist = null; };
 
         container.addEventListener('wheel', handleWheel, { passive: false });
         container.addEventListener('touchstart', handleTouchStart, { passive: false });
@@ -361,30 +352,20 @@
         };
       }, [viewMode, currentPlanId]);
 
-      // Gestion du glisser (Pan)
       const handlePointerDown = (e) => {
         if (e.target.closest('.reserve-pin')) return;
         isPointerDownRef.current = true;
         isDraggingRef.current = false;
         dragStartPosRef.current = { x: e.clientX, y: e.clientY };
-        if (scrollContainerRef.current) {
-          dragStartScrollRef.current = {
-            x: scrollContainerRef.current.scrollLeft,
-            y: scrollContainerRef.current.scrollTop
-          };
-        }
-        if (e.pointerType === 'mouse') {
-          try { e.currentTarget.setPointerCapture(e.pointerId); } catch(err) {}
-        }
+        if (scrollContainerRef.current) dragStartScrollRef.current = { x: scrollContainerRef.current.scrollLeft, y: scrollContainerRef.current.scrollTop };
+        if (e.pointerType === 'mouse') { try { e.currentTarget.setPointerCapture(e.pointerId); } catch(err) {} }
       };
 
       const handlePointerMove = (e) => {
         if (!isPointerDownRef.current) return;
         if (e.pointerType === 'touch' && !e.isPrimary) return;
-
         const dx = e.clientX - dragStartPosRef.current.x;
         const dy = e.clientY - dragStartPosRef.current.y;
-
         if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
           isDraggingRef.current = true;
           if (scrollContainerRef.current) {
@@ -396,21 +377,38 @@
 
       const handlePointerUp = (e) => {
         isPointerDownRef.current = false;
-        if (e.pointerType === 'mouse') {
-          try { e.currentTarget.releasePointerCapture(e.pointerId); } catch(err) {}
-        }
+        if (e.pointerType === 'mouse') { try { e.currentTarget.releasePointerCapture(e.pointerId); } catch(err) {} }
       };
 
-      // --- ACTIONS ---
+      // --- ACTIONS MÉTIER ---
       const handleCreateProject = () => {
         const projectName = window.prompt("Nom du nouveau projet :");
         if (projectName && projectName.trim() !== '') {
-          const newProject = { id: `p_${Date.now()}`, name: projectName.trim() };
-          setProjects([...projects, newProject]);
+          const newProject = { id: `p_${Date.now()}`, name: projectName.trim(), lots: [] };
+          if (!user || user.uid === 'mock-user-test') setProjects(p => [...p, newProject]);
+          saveToDB('projects', newProject.id, newProject);
           setCurrentProjectId(newProject.id);
           setCurrentPlanId(null);
         }
       };
+
+      const handleAddLot = () => {
+        if (!newLotName || !currentProject) return;
+        const newLot = { id: `lot_${Date.now()}`, name: newLotName, entreprise: newLotEntreprise };
+        const updatedProject = { ...currentProject, lots: [...(currentProject.lots || []), newLot] };
+        if (!user || user.uid === 'mock-user-test') setProjects(projects.map(p => p.id === updatedProject.id ? updatedProject : p));
+        saveToDB('projects', updatedProject.id, updatedProject);
+        setNewLotName(''); setNewLotEntreprise('');
+      };
+
+      const handleDeleteLot = (lotId) => {
+        const updatedProject = { ...currentProject, lots: currentProject.lots.filter(l => l.id !== lotId) };
+        if (!user || user.uid === 'mock-user-test') setProjects(projects.map(p => p.id === updatedProject.id ? updatedProject : p));
+        saveToDB('projects', updatedProject.id, updatedProject);
+      };
+
+      const getLotName = (lotId) => currentProject?.lots?.find(l => l.id === lotId)?.name || '-';
+      const getLotEntreprise = (lotId) => currentProject?.lots?.find(l => l.id === lotId)?.entreprise || '-';
 
       const handlePlanUpload = async (e) => {
         const file = e.target.files[0];
@@ -421,6 +419,7 @@
         const planName = file.name.replace(/\.[^/.]+$/, "");
 
         try {
+          let imageUrl = '';
           if (file.type === 'application/pdf') {
             if (!window.pdfjsLib) {
               await new Promise((resolve, reject) => {
@@ -430,66 +429,61 @@
                   window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
                   resolve();
                 };
-                script.onerror = reject;
-                document.head.appendChild(script);
+                script.onerror = reject; document.head.appendChild(script);
               });
             }
-
             const arrayBuffer = await file.arrayBuffer();
-            const typedarray = new Uint8Array(arrayBuffer);
-            const pdf = await window.pdfjsLib.getDocument(typedarray).promise;
+            const pdf = await window.pdfjsLib.getDocument(new Uint8Array(arrayBuffer)).promise;
             const page = await pdf.getPage(1);
-
+            
             const viewport = page.getViewport({ scale: 2.0 });
             const canvas = document.createElement('canvas');
-            const context = canvas.getContext('2d');
             canvas.height = viewport.height;
             canvas.width = viewport.width;
-
-            await page.render({ canvasContext: context, viewport: viewport }).promise;
-            const imageUrl = canvas.toDataURL('image/jpeg', 0.8);
+            await page.render({ canvasContext: canvas.getContext('2d'), viewport: viewport }).promise;
             
-            setPlans(prev => [...prev, { id: newPlanId, projectId: currentProjectId, name: planName, imageUrl }]);
-            setCurrentPlanId(newPlanId);
+            imageUrl = canvas.toDataURL('image/jpeg', 0.6); // Compression forte pour Firestore
           } else {
-            const reader = new FileReader();
-            reader.onloadend = () => {
-              setPlans(prev => [...prev, { id: newPlanId, projectId: currentProjectId, name: planName, imageUrl: reader.result }]);
-              setCurrentPlanId(newPlanId);
-            };
-            reader.readAsDataURL(file);
+            imageUrl = await compressImageFile(file, 2000, 0.6);
           }
-        } catch (error) {
-          console.error("Erreur lors de l'upload du plan :", error);
-          alert("Une erreur est survenue lors de la lecture du fichier.");
-        } finally {
-          setIsUploadingPlan(false);
-          e.target.value = '';
-        }
+          
+          const newPlan = { id: newPlanId, projectId: currentProjectId, name: planName, imageUrl };
+          if (!user || user.uid === 'mock-user-test') setPlans(p => [...p, newPlan]);
+          saveToDB('plans', newPlan.id, newPlan);
+          setCurrentPlanId(newPlanId);
+          
+        } catch (error) { alert("Erreur lors de la lecture du fichier."); } 
+        finally { setIsUploadingPlan(false); e.target.value = ''; }
       };
 
       const handleAddPin = (e) => {
-        if (isDraggingRef.current) return; // Empêche de poser une pastille si on était en train de glisser
-        if (viewMode !== 'plan' || !currentPlan) return;
+        if (isDraggingRef.current || viewMode !== 'plan' || !currentPlan) return;
         const rect = e.currentTarget.getBoundingClientRect();
-        const x = ((e.clientX - rect.left) / rect.width) * 100;
-        const y = ((e.clientY - rect.top) / rect.height) * 100;
-
         const newReserve = {
-          id: `r_${Date.now()}`, planId: currentPlanId, x, y,
-          status: 'OPEN', lot: LOTS[0], entreprise: '', description: '', photoUrl: null,
+          id: `r_${Date.now()}`, planId: currentPlanId, 
+          x: ((e.clientX - rect.left) / rect.width) * 100, 
+          y: ((e.clientY - rect.top) / rect.height) * 100,
+          status: 'OPEN', lotId: '', description: '', photoUrl: null,
           date: new Date().toISOString().split('T')[0]
         };
 
-        setReserves([...reserves, newReserve]);
+        if (!user || user.uid === 'mock-user-test') setReserves(r => [...r, newReserve]);
+        saveToDB('reserves', newReserve.id, newReserve);
         setSelectedReserveId(newReserve.id);
       };
 
-      const handleUpdateReserve = (id, updates) => setReserves(reserves.map(r => r.id === id ? { ...r, ...updates } : r));
+      const handleUpdateReserve = (id, updates) => {
+        const reserve = reserves.find(r => r.id === id);
+        if (!reserve) return;
+        const updated = { ...reserve, ...updates };
+        if (!user || user.uid === 'mock-user-test') setReserves(reserves.map(r => r.id === id ? updated : r));
+        saveToDB('reserves', id, updated);
+      };
       
       const handleDeleteReserve = (id) => {
         if(window.confirm('Supprimer cette réserve ?')) {
-          setReserves(reserves.filter(r => r.id !== id));
+          if (!user || user.uid === 'mock-user-test') setReserves(reserves.filter(r => r.id !== id));
+          deleteFromDB('reserves', id);
           setSelectedReserveId(null);
         }
       };
@@ -497,44 +491,26 @@
       const handleExportPDF = async () => {
         if (!currentPlan) return;
         setIsExporting(true);
-        
         try {
           if (!window.html2pdf) {
-            await new Promise((resolve, reject) => {
+            await new Promise((res, rej) => {
               const script = document.createElement('script');
               script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js';
-              script.onload = resolve;
-              script.onerror = reject;
-              document.head.appendChild(script);
+              script.onload = res; script.onerror = rej; document.head.appendChild(script);
             });
           }
-
           const element = document.getElementById('pdf-export-container');
           element.style.display = 'block';
-
-          const opt = {
-            margin:       10,
-            filename:     `Rapport_Reserves_${currentPlan.name}.pdf`,
-            image:        { type: 'jpeg', quality: 0.98 },
-            html2canvas:  { scale: 2, useCORS: true, logging: false },
-            jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' }
-          };
-
+          const opt = { margin: 10, filename: `Rapport_${currentPlan.name}.pdf`, image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2, useCORS: true }, jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' } };
           await window.html2pdf().set(opt).from(element).save();
           element.style.display = 'none';
-        } catch (error) {
-          console.error(error);
-          alert("Erreur lors de la génération du PDF. Vérifiez votre connexion.");
-        } finally {
-          setIsExporting(false);
-        }
+        } catch (error) { alert("Erreur lors de la génération du PDF."); } 
+        finally { setIsExporting(false); }
       };
 
 
       // --- RENDU : ÉCRAN DE CONNEXION ---
-      if (isAuthLoading) {
-        return <div className="min-h-screen flex items-center justify-center bg-slate-100"><Loader2 className="animate-spin text-[#003B5C]" size={48} /></div>;
-      }
+      if (isAuthLoading) return <div className="min-h-screen flex items-center justify-center bg-slate-100"><Loader2 className="animate-spin text-[#003B5C]" size={48} /></div>;
 
       if (!user) {
         return (
@@ -555,16 +531,43 @@
       return (
         <div className="font-sans text-slate-800 h-screen w-full flex bg-slate-50 overflow-hidden relative">
           
-          {/* ÉDITEUR DE PHOTO OVERLAY */}
+          {/* MODAL : GESTION DES LOTS */}
+          {isLotModalOpen && (
+            <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl shadow-xl max-w-md w-full overflow-hidden flex flex-col max-h-[90vh]">
+                <div className="flex justify-between items-center p-4 border-b border-slate-200">
+                  <h3 className="font-bold text-lg text-[#003B5C]">Gérer les lots du projet</h3>
+                  <button onClick={() => setIsLotModalOpen(false)} className="p-1 hover:bg-slate-100 rounded-full"><X size={20}/></button>
+                </div>
+                <div className="p-4 overflow-y-auto flex-1">
+                  <div className="bg-slate-50 p-4 rounded-xl mb-6 border border-slate-200">
+                    <h4 className="text-sm font-bold mb-3 text-slate-700">Ajouter un nouveau lot</h4>
+                    <input type="text" placeholder="Nom du lot (ex: Menuiserie)" value={newLotName} onChange={e=>setNewLotName(e.target.value)} className="w-full border rounded-md p-2 text-sm mb-2" />
+                    <input type="text" placeholder="Entreprise associée" value={newLotEntreprise} onChange={e=>setNewLotEntreprise(e.target.value)} className="w-full border rounded-md p-2 text-sm mb-3" />
+                    <button onClick={handleAddLot} className="w-full bg-[#003B5C] text-white py-2 rounded-md font-medium hover:bg-[#002a42]">Ajouter</button>
+                  </div>
+                  
+                  <h4 className="text-sm font-bold mb-3 text-slate-700">Lots existants ({currentProject?.lots?.length || 0})</h4>
+                  <ul className="divide-y divide-slate-100">
+                    {currentProject?.lots?.map(lot => (
+                      <li key={lot.id} className="py-3 flex justify-between items-center">
+                        <div>
+                          <p className="font-bold text-sm text-[#003B5C]">{lot.name}</p>
+                          <p className="text-xs text-slate-500">{lot.entreprise || 'Aucune entreprise'}</p>
+                        </div>
+                        <button onClick={() => handleDeleteLot(lot.id)} className="text-red-400 hover:text-red-600 p-2"><Trash2 size={16}/></button>
+                      </li>
+                    ))}
+                    {(!currentProject?.lots || currentProject.lots.length === 0) && <p className="text-sm text-slate-400 italic">Aucun lot défini pour le moment.</p>}
+                  </ul>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* OVERLAY : DESSIN PHOTO */}
           {editingPhotoUrl && (
-            <PhotoEditor 
-              photoUrl={editingPhotoUrl} 
-              onSave={(annotatedImageBase64) => {
-                handleUpdateReserve(selectedReserveId, { photoUrl: annotatedImageBase64 });
-                setEditingPhotoUrl(null);
-              }}
-              onClose={() => setEditingPhotoUrl(null)} 
-            />
+            <PhotoEditor photoUrl={editingPhotoUrl} onSave={(base64) => { handleUpdateReserve(selectedReserveId, { photoUrl: base64 }); setEditingPhotoUrl(null); }} onClose={() => setEditingPhotoUrl(null)} />
           )}
 
           {/* BARRE LATÉRALE */}
@@ -580,17 +583,22 @@
                   <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Projet Actuel</h3>
                   <button onClick={handleCreateProject} className="text-[#003B5C] hover:bg-[#eef8fb] p-1 rounded" title="Nouveau projet"><Plus size={16} /></button>
                 </div>
-                <select className="w-full bg-slate-100 rounded-lg p-2.5 text-sm font-medium outline-none focus:ring-2 focus:ring-[#003B5C]" value={currentProjectId} onChange={(e) => { setCurrentProjectId(e.target.value); setCurrentPlanId(plans.find(p => p.projectId === e.target.value)?.id || null); setSelectedReserveId(null); }}>
+                <select className="w-full bg-slate-100 rounded-lg p-2.5 text-sm font-medium outline-none focus:ring-2 focus:ring-[#003B5C] mb-2" value={currentProjectId || ''} onChange={(e) => { setCurrentProjectId(e.target.value); setCurrentPlanId(plans.find(p => p.projectId === e.target.value)?.id || null); setSelectedReserveId(null); }}>
                   {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
+                {currentProject && (
+                  <button onClick={() => setIsLotModalOpen(true)} className="w-full flex items-center justify-center gap-2 text-xs font-medium text-slate-600 bg-slate-50 border border-slate-200 py-1.5 rounded-md hover:bg-slate-100 transition-colors">
+                    <Settings size={14}/> Gérer les lots du projet
+                  </button>
+                )}
               </div>
 
               <div className="mb-6">
                 <div className="flex items-center justify-between px-2 mb-3">
                   <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Plans du projet</h3>
-                  <label className={`cursor-pointer text-[#003B5C] hover:bg-[#eef8fb] p-1 rounded ${isUploadingPlan ? 'opacity-50 pointer-events-none' : ''}`} title="Ajouter un plan (Image ou PDF)">
+                  <label className={`cursor-pointer text-[#003B5C] hover:bg-[#eef8fb] p-1 rounded ${isUploadingPlan || !currentProject ? 'opacity-50 pointer-events-none' : ''}`} title="Ajouter un plan">
                     {isUploadingPlan ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
-                    <input type="file" accept="image/*,application/pdf" className="hidden" onChange={handlePlanUpload} disabled={isUploadingPlan} />
+                    <input type="file" accept="image/*,application/pdf" className="hidden" onChange={handlePlanUpload} disabled={isUploadingPlan || !currentProject} />
                   </label>
                 </div>
                 <div className="space-y-1">
@@ -599,6 +607,7 @@
                       <Map size={18} className={currentPlanId === plan.id ? 'text-[#4CBBE4]' : 'text-slate-400'} /><span className="truncate">{plan.name}</span>
                     </button>
                   ))}
+                  {projectPlans.length === 0 && <p className="text-xs text-slate-400 px-2 italic">Aucun plan.</p>}
                 </div>
               </div>
             </div>
@@ -634,10 +643,7 @@
                 </div>
               )}
 
-              <button 
-                onClick={handleExportPDF} disabled={!currentPlan || isExporting}
-                className={`hidden sm:flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${currentPlan && !isExporting ? 'bg-[#003B5C] hover:bg-[#002a42] text-white' : 'bg-slate-200 text-slate-400'}`}
-              >
+              <button onClick={handleExportPDF} disabled={!currentPlan || isExporting} className={`hidden sm:flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${currentPlan && !isExporting ? 'bg-[#003B5C] hover:bg-[#002a42] text-white' : 'bg-slate-200 text-slate-400'}`}>
                 {isExporting ? <Loader2 size={16} className="animate-spin" /> : <FileText size={16} />} 
                 {isExporting ? 'Génération...' : 'Exporter PDF'}
               </button>
@@ -651,30 +657,16 @@
                   ref={scrollContainerRef}
                   className={`flex-1 overflow-auto p-4 flex ${zoomLevel === 1 ? 'items-center justify-center' : 'items-start justify-start'} bg-slate-100 relative`}
                   style={{ touchAction: 'none' }}
-                  onPointerDown={handlePointerDown}
-                  onPointerMove={handlePointerMove}
-                  onPointerUp={handlePointerUp}
-                  onPointerCancel={handlePointerUp}
-                  onPointerLeave={handlePointerUp}
+                  onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerCancel={handlePointerUp} onPointerLeave={handlePointerUp}
                 >
-                  
                   {/* Outils de Zoom */}
                   {currentPlan && (
-                    <div 
-                      className="fixed sm:absolute bottom-6 right-6 z-20 flex flex-col bg-white rounded-lg shadow-xl border border-slate-200 overflow-hidden"
-                      onPointerDown={e => e.stopPropagation()}
-                    >
-                      <button onClick={() => setZoomLevel(z => Math.min(z + 0.5, 5))} className="p-3 hover:bg-slate-50 text-slate-700 transition-colors" title="Zoomer">
-                        <ZoomIn size={20} />
-                      </button>
+                    <div className="fixed sm:absolute bottom-6 right-6 z-20 flex flex-col bg-white rounded-lg shadow-xl border border-slate-200 overflow-hidden" onPointerDown={e => e.stopPropagation()}>
+                      <button onClick={() => setZoomLevel(z => Math.min(z * 1.5, 20))} className="p-3 hover:bg-slate-50 text-slate-700 transition-colors" title="Zoomer"><ZoomIn size={20} /></button>
                       <div className="h-px bg-slate-200 w-full"></div>
-                      <button onClick={() => setZoomLevel(z => Math.max(z - 0.5, 0.5))} className="p-3 hover:bg-slate-50 text-slate-700 transition-colors" title="Dézoomer">
-                        <ZoomOut size={20} />
-                      </button>
+                      <button onClick={() => setZoomLevel(z => Math.max(z / 1.5, 0.5))} className="p-3 hover:bg-slate-50 text-slate-700 transition-colors" title="Dézoomer"><ZoomOut size={20} /></button>
                       <div className="h-px bg-slate-200 w-full"></div>
-                      <button onClick={() => setZoomLevel(1)} className="p-3 hover:bg-slate-50 text-[#003B5C] font-bold text-xs transition-colors" title="Taille d'origine">
-                        1x
-                      </button>
+                      <button onClick={() => setZoomLevel(1)} className="p-3 hover:bg-slate-50 text-[#003B5C] font-bold text-xs transition-colors" title="Taille d'origine">1x</button>
                     </div>
                   )}
 
@@ -682,22 +674,9 @@
                     <div 
                       className="relative shadow-xl bg-white border border-slate-200 cursor-crosshair inline-block origin-top-left" 
                       onClick={handleAddPin}
-                      style={{
-                        width: zoomLevel === 1 ? 'auto' : `${zoomLevel * 100}%`
-                      }}
+                      style={{ width: zoomLevel === 1 ? 'auto' : `${zoomLevel * 100}%` }}
                     >
-                      <img 
-                        src={currentPlan.imageUrl} 
-                        alt="Plan" 
-                        className="block pointer-events-none" 
-                        draggable="false"
-                        style={{
-                          maxHeight: zoomLevel === 1 ? '80vh' : 'none',
-                          maxWidth: zoomLevel === 1 ? '100%' : 'none',
-                          width: zoomLevel !== 1 ? '100%' : 'auto',
-                          height: 'auto'
-                        }}
-                      />
+                      <img src={currentPlan.imageUrl} alt="Plan" className="block pointer-events-none" draggable="false" style={{ maxHeight: zoomLevel === 1 ? '80vh' : 'none', maxWidth: zoomLevel === 1 ? '100%' : 'none', width: zoomLevel !== 1 ? '100%' : 'auto', height: 'auto' }} />
                       {currentPlanReserves.map((reserve, index) => {
                         const isSelected = selectedReserveId === reserve.id;
                         return (
@@ -708,7 +687,7 @@
                         );
                       })}
                     </div>
-                  ) : <p className="text-slate-500 m-auto">Sélectionnez un plan à gauche.</p>}
+                  ) : <p className="text-slate-500 m-auto">Sélectionnez ou créez un projet.</p>}
                 </div>
               )}
 
@@ -721,7 +700,7 @@
                       <option value="">Tous les statuts</option>{Object.values(STATUS).map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
                     </select>
                     <select className="border border-slate-300 rounded-md p-2 text-sm" value={filterLot} onChange={(e) => setFilterLot(e.target.value)}>
-                      <option value="">Tous les lots</option>{LOTS.map(l => <option key={l} value={l}>{l}</option>)}
+                      <option value="">Tous les lots</option>{currentProject?.lots?.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
                     </select>
                   </div>
                   <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
@@ -730,11 +709,11 @@
                         <tr><th className="px-4 py-3">N°</th><th className="px-4 py-3">Statut</th><th className="px-4 py-3">Lot</th><th className="px-4 py-3 w-full">Description</th></tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
-                        {currentPlanReserves.filter(r => (filterStatus ? r.status===filterStatus : true) && (filterLot ? r.lot===filterLot : true)).map((r, i) => (
+                        {currentPlanReserves.filter(r => (filterStatus ? r.status===filterStatus : true) && (filterLot ? r.lotId===filterLot : true)).map((r, i) => (
                           <tr key={r.id} className="hover:bg-slate-50 cursor-pointer" onClick={() => { setSelectedReserveId(r.id); setViewMode('plan'); }}>
                             <td className="px-4 py-3 font-bold">#{i + 1}</td>
                             <td className="px-4 py-3"><span className={`px-2 py-1 rounded-full text-xs text-white ${STATUS[r.status].color}`}>{STATUS[r.status].label}</span></td>
-                            <td className="px-4 py-3 font-medium">{r.lot}</td>
+                            <td className="px-4 py-3 font-medium">{getLotName(r.lotId)}</td>
                             <td className="px-4 py-3 truncate max-w-xs">{r.description || '-'}</td>
                           </tr>
                         ))}
@@ -767,8 +746,15 @@
                       </div>
                     </div>
                     <div className="space-y-3 bg-slate-50 p-4 rounded-xl border border-slate-100">
-                      <select value={selectedReserve.lot} onChange={(e) => handleUpdateReserve(selectedReserve.id, { lot: e.target.value })} className="w-full border rounded-md p-2 text-sm"><option value="">Lot...</option>{LOTS.map(l => <option key={l} value={l}>{l}</option>)}</select>
-                      <input type="text" placeholder="Entreprise..." value={selectedReserve.entreprise} onChange={(e) => handleUpdateReserve(selectedReserve.id, { entreprise: e.target.value })} className="w-full border rounded-md p-2 text-sm" />
+                      <select 
+                        value={selectedReserve.lotId} 
+                        onChange={(e) => handleUpdateReserve(selectedReserve.id, { lotId: e.target.value })} 
+                        className="w-full border rounded-md p-2 text-sm"
+                      >
+                        <option value="">Sélectionner un lot...</option>
+                        {currentProject?.lots?.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
+                      </select>
+                      <input type="text" readOnly value={getLotEntreprise(selectedReserve.lotId)} placeholder="Entreprise liée au lot..." className="w-full border rounded-md p-2 text-sm bg-slate-100 text-slate-500" />
                     </div>
                     <textarea rows={3} placeholder="Description..." value={selectedReserve.description} onChange={(e) => handleUpdateReserve(selectedReserve.id, { description: e.target.value })} className="w-full border rounded-md p-3 text-sm" />
                     
@@ -786,7 +772,7 @@
                       ) : (
                         <label className="flex flex-col items-center justify-center h-24 border-2 border-dashed rounded-lg bg-slate-50 hover:bg-slate-100 cursor-pointer text-slate-500">
                           <Camera size={24} className="mb-1" /><span className="text-xs">Ajouter une photo</span>
-                          <input type="file" accept="image/*" className="hidden" onChange={(e) => { const f=e.target.files[0]; if(f){ const r=new FileReader(); r.onload=()=>handleUpdateReserve(selectedReserve.id, {photoUrl: r.result}); r.readAsDataURL(f); } }} />
+                          <input type="file" accept="image/*" className="hidden" onChange={async (e) => { const f=e.target.files[0]; if(f){ const compressedUrl = await compressImageFile(f, 1500, 0.6); handleUpdateReserve(selectedReserve.id, {photoUrl: compressedUrl}); } }} />
                         </label>
                       )}
                     </div>
@@ -798,14 +784,8 @@
 
           {/* =========================================
               CONTENEUR CACHÉ POUR L'EXPORT PDF
-              (Sera utilisé par html2pdf pour créer le document)
               ========================================= */}
-          <div 
-            id="pdf-export-container" 
-            className="bg-white text-black" 
-            style={{ display: 'none', width: '210mm', padding: '20mm', boxSizing: 'border-box' }}
-          >
-            {/* Entête */}
+          <div id="pdf-export-container" className="bg-white text-black" style={{ display: 'none', width: '210mm', padding: '20mm', boxSizing: 'border-box' }}>
             <div className="border-b-2 border-[#003B5C] pb-4 mb-6 flex justify-between items-end">
               <div>
                 <img src={LOGO_ACCEO} alt="ACCEO Environnement" className="h-12 object-contain mb-4" />
@@ -823,7 +803,6 @@
               </div>
             </div>
 
-            {/* Plan pleine largeur */}
             {currentPlan && (
               <div className="mb-10 text-center relative mx-auto inline-block border border-slate-300">
                 <img src={currentPlan.imageUrl} alt="Plan" className="max-w-full" style={{ maxHeight: '160mm' }} />
@@ -834,11 +813,8 @@
                 ))}
               </div>
             )}
-
-            {/* Saut de page forcé pour le PDF */}
             <div className="html2pdf__page-break"></div>
 
-            {/* Tableau */}
             <h3 className="text-lg font-bold mb-4 border-b border-slate-300 pb-2">Détails des interventions</h3>
             <table className="w-full text-left text-[12px] border-collapse">
               <thead>
@@ -855,7 +831,7 @@
                   <tr key={r.id} className="border border-slate-400">
                     <td className="p-2 text-center font-bold border-r border-slate-400">{i + 1}</td>
                     <td className="p-2 font-bold uppercase text-[10px] border-r border-slate-400" style={{ color: STATUS[r.status].color.replace('bg-','') }}>{STATUS[r.status].label}</td>
-                    <td className="p-2 border-r border-slate-400"><strong>{r.lot}</strong><br/>{r.entreprise || '-'}</td>
+                    <td className="p-2 border-r border-slate-400"><strong>{getLotName(r.lotId)}</strong><br/>{getLotEntreprise(r.lotId)}</td>
                     <td className="p-2 border-r border-slate-400 whitespace-pre-wrap">{r.description}</td>
                     <td className="p-2 text-center h-20">
                       {r.photoUrl ? <img src={r.photoUrl} alt="Défaut" className="max-h-16 max-w-full object-contain mx-auto" /> : '-'}
@@ -865,12 +841,10 @@
               </tbody>
             </table>
           </div>
-
         </div>
       );
     }
 
-    // --- INITIALISATION REACT ---
     const root = createRoot(document.getElementById('root'));
     root.render(<App />);
   </script>
